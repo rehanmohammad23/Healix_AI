@@ -1,3 +1,4 @@
+#RAG_CHAIN.py
 import os
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
@@ -25,10 +26,10 @@ STRICT RULES:
 (Explain the condition/topic clearly in 2-3 lines)
 
 ⚠️ CAUSES:
-(List main causes with bullet points)
+(List main causes with 3-4 bullet points)
 
 🩺 SYMPTOMS:
-(List common symptoms with bullet points)
+(List common symptoms with 3-4 bullet points)
 
 💊 TREATMENT:
 (List treatment options clearly)

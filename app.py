@@ -1,10 +1,7 @@
 import streamlit as st
 from src.retrieval.rag_chain import build_rag_chain, ask
 from datetime import datetime
-import base64
-import requests
-import csv
-import os
+import base64, requests, csv, os
 import folium
 from streamlit_folium import st_folium
 from streamlit_js_eval import get_geolocation
@@ -12,667 +9,700 @@ from dotenv import load_dotenv
 from groq import Groq
 
 load_dotenv()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-client = Groq(api_key=GROQ_API_KEY)
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-st.set_page_config(
-    page_title="HEALIX AI",
-    page_icon="🧬",
-    layout="centered"
-)
+st.set_page_config(page_title="Healix AI", page_icon="🩺", layout="wide", initial_sidebar_state="expanded")
 
-# Load image
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def get_image_base64(path):
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode()
 
-try:
-    img_base64 = get_image_base64("HEALIX.png")
-    img_tag = f'<img src="data:image/png;base64,{img_base64}" class="healix-logo"/>'
-except:
-    img_tag = '<div style="font-size:4em;">🧬</div>'
-
-# Analyze medical image
 def analyze_medical_image(image_bytes, mime_type="image/jpeg"):
     try:
-        image_b64 = base64.b64encode(image_bytes).decode('utf-8')
-        response = client.chat.completions.create(
+        r = client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{image_b64}"
-                            }
-                        },
-                        {
-                            "type": "text",
-                            "text": """You are HEALIX AI — an expert medical image analyzer.
-Analyze this medical image carefully and provide:
-
-🔍 WHAT I SEE:
-(Describe what is visible in the image clearly)
-
-🩺 POSSIBLE CONDITION:
-(What medical condition this might be)
-
-⚠️ SEVERITY:
-(Mild / Moderate / Severe — based on what you see)
-
-💊 RECOMMENDED ACTION:
-(What the person should do)
-
-👨‍⚕️ WHICH DOCTOR TO VISIT:
-(Specific specialist to consult)
-
-⚕️ IMPORTANT:
-This is an AI analysis only. Please consult a qualified doctor for proper diagnosis.
-
-Be clear, helpful and accurate."""
-                        }
-                    ]
-                }
-            ],
+            messages=[{"role":"user","content":[
+                {"type":"image_url","image_url":{"url":f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode()}"}},
+                {"type":"text","text":(
+                    "You are HEALIX AI — an expert medical image analyzer.\n"
+                    "Analyze this medical image carefully and provide:\n\n"
+                    " WHAT I SEE:\n(Describe what is visible)\n\n"
+                    " POSSIBLE CONDITION:\n(What medical condition this might be)\n\n"
+                    " SEVERITY:\n(Mild / Moderate / Severe)\n\n"
+                    " RECOMMENDED ACTION:\n(What the person should do)\n\n"
+                    " WHICH DOCTOR TO VISIT:\n(Specific specialist)\n\n"
+                    " IMPORTANT:\nThis is AI analysis only. Consult a qualified doctor."
+                )}
+            ]}],
             max_tokens=1000
         )
-        return response.choices[0].message.content
+        return r.choices[0].message.content
     except Exception as e:
-        return f"❌ Image analysis failed: {str(e)}"
+        return f"Image analysis failed: {str(e)}"
 
-# Get area from coordinates
 def get_city_from_coords(lat, lon):
     try:
-        url = "https://nominatim.openstreetmap.org/reverse"
-        params = {"lat": lat, "lon": lon, "format": "json", "addressdetails": 1}
-        headers = {"User-Agent": "HealixAI/1.0"}
-        response = requests.get(url, params=params, headers=headers, timeout=10)
-        data = response.json()
-        address = data.get("address", {})
-        area = (
-            address.get("suburb") or
-            address.get("neighbourhood") or
-            address.get("quarter") or
-            address.get("village") or
-            address.get("town") or
-            address.get("city") or ""
-        )
-        city = address.get("city") or address.get("town") or ""
-        if area and city and area != city:
-            return f"{area}, {city}"
-        return city or area
-    except:
-        return ""
+        r = requests.get("https://nominatim.openstreetmap.org/reverse",
+            params={"lat":lat,"lon":lon,"format":"json","addressdetails":1},
+            headers={"User-Agent":"HealixAI/1.0"}, timeout=10)
+        a = r.json().get("address",{})
+        area = a.get("suburb") or a.get("neighbourhood") or a.get("town") or ""
+        city = a.get("city") or a.get("town") or ""
+        return f"{area}, {city}" if area and city and area != city else (city or area)
+    except: return ""
 
-# Detect specialty
-def detect_specialty(question):
-    question = question.lower()
-    if any(w in question for w in ["heart", "cardiac", "chest pain", "blood pressure", "hypertension", "palpitation", "angina"]):
-        return "cardiology hospital OR cardiology clinic OR multispeciality hospital"
-    elif any(w in question for w in ["skin", "rash", "acne", "eczema", "dermatitis", "psoriasis", "itching", "pimple", "fungal", "wound", "burn", "allergy", "hives", "scar", "pigmentation", "dark spots", "hair loss", "dandruff"]):
-        return "dermatology clinic OR skin hospital OR multispeciality hospital"
-    elif any(w in question for w in ["bone", "joint", "fracture", "arthritis", "ortho", "spine", "back pain", "knee", "shoulder"]):
-        return "orthopedic hospital OR orthopedic clinic OR multispeciality hospital"
-    elif any(w in question for w in ["brain", "neurology", "headache", "migraine", "seizure", "stroke", "paralysis", "nerve", "vertigo"]):
-        return "neurology hospital OR neurology clinic OR multispeciality hospital"
-    elif any(w in question for w in ["eye", "vision", "cataract", "glaucoma", "retina", "blind", "cornea"]):
-        return "eye hospital OR eye clinic OR ophthalmology clinic"
-    elif any(w in question for w in ["teeth", "tooth", "dental", "gum", "cavity", "braces", "root canal"]):
-        return "dental clinic OR dentist OR dental hospital"
-    elif any(w in question for w in ["child", "baby", "infant", "pediatric", "kid", "newborn", "toddler"]):
-        return "children hospital OR pediatric clinic OR multispeciality hospital"
-    elif any(w in question for w in ["mental", "depression", "anxiety", "psychiatric", "psychology", "stress", "bipolar", "ocd"]):
-        return "psychiatric hospital OR mental health clinic OR psychiatry clinic"
-    elif any(w in question for w in ["kidney", "renal", "dialysis", "urine", "urinary", "bladder"]):
-        return "nephrology hospital OR kidney clinic OR urology clinic"
-    elif any(w in question for w in ["lung", "breathing", "asthma", "pulmonary", "respiratory", "cough", "tuberculosis"]):
-        return "pulmonology hospital OR chest clinic OR respiratory clinic"
-    elif any(w in question for w in ["cancer", "tumor", "oncology", "chemotherapy", "radiation", "biopsy"]):
-        return "cancer hospital OR oncology clinic OR multispeciality hospital"
-    elif any(w in question for w in ["stomach", "digestion", "gastro", "liver", "intestine", "bowel", "diarrhea", "ulcer"]):
-        return "gastroenterology hospital OR gastro clinic OR multispeciality hospital"
-    elif any(w in question for w in ["women", "pregnancy", "gynecology", "uterus", "ovary", "periods", "pcos", "fertility"]):
-        return "gynecology hospital OR women clinic OR maternity hospital"
-    elif any(w in question for w in ["diabetes", "thyroid", "hormone", "endocrine", "insulin", "blood sugar"]):
-        return "endocrinology hospital OR diabetes clinic OR multispeciality hospital"
-    elif any(w in question for w in ["ear", "hearing", "ent", "nose", "throat", "tonsil", "sinusitis"]):
-        return "ENT clinic OR ear nose throat clinic OR multispeciality hospital"
-    elif any(w in question for w in ["fever", "cold", "flu", "infection", "viral", "bacterial", "typhoid", "malaria"]):
-        return "general hospital OR medical clinic OR multispeciality hospital"
-    elif any(w in question for w in ["blood", "anemia", "hemoglobin", "platelet"]):
-        return "hematology clinic OR multispeciality hospital OR general hospital"
-    else:
-        return "multispeciality hospital OR general hospital OR medical clinic"
+def detect_specialty(q):
+    q = q.lower()
+    rules = [
+        (["heart","cardiac","chest pain","blood pressure","hypertension","palpitation"], "cardiology hospital OR cardiology clinic OR multispeciality hospital"),
+        (["skin","rash","acne","eczema","dermatitis","psoriasis","itching","pimple","fungal","wound","burn","allergy","hives","scar","pigmentation","hair loss","dandruff"], "dermatology clinic OR skin hospital OR multispeciality hospital"),
+        (["bone","joint","fracture","arthritis","ortho","spine","back pain","knee","shoulder"], "orthopedic hospital OR orthopedic clinic OR multispeciality hospital"),
+        (["brain","neurology","headache","migraine","seizure","stroke","paralysis","nerve","vertigo"], "neurology hospital OR neurology clinic OR multispeciality hospital"),
+        (["eye","vision","cataract","glaucoma","retina","blind","cornea"], "eye hospital OR eye clinic OR ophthalmology clinic"),
+        (["teeth","tooth","dental","gum","cavity","braces","root canal"], "dental clinic OR dentist OR dental hospital"),
+        (["child","baby","infant","pediatric","kid","newborn","toddler"], "children hospital OR pediatric clinic OR multispeciality hospital"),
+        (["mental","depression","anxiety","psychiatric","psychology","stress","bipolar","ocd"], "psychiatric hospital OR mental health clinic OR psychiatry clinic"),
+        (["kidney","renal","dialysis","urine","urinary","bladder"], "nephrology hospital OR kidney clinic OR urology clinic"),
+        (["lung","breathing","asthma","pulmonary","respiratory","cough","tuberculosis"], "pulmonology hospital OR chest clinic OR respiratory clinic"),
+        (["cancer","tumor","oncology","chemotherapy","radiation","biopsy"], "cancer hospital OR oncology clinic OR multispeciality hospital"),
+        (["stomach","digestion","gastro","liver","intestine","bowel","diarrhea","ulcer"], "gastroenterology hospital OR gastro clinic OR multispeciality hospital"),
+        (["women","pregnancy","gynecology","uterus","ovary","periods","pcos","fertility"], "gynecology hospital OR women clinic OR maternity hospital"),
+        (["diabetes","thyroid","hormone","endocrine","insulin","blood sugar"], "endocrinology hospital OR diabetes clinic OR multispeciality hospital"),
+        (["ear","hearing","ent","nose","throat","tonsil","sinusitis"], "ENT clinic OR ear nose throat clinic OR multispeciality hospital"),
+        (["fever","cold","flu","infection","viral","bacterial","typhoid","malaria"], "general hospital OR medical clinic OR multispeciality hospital"),
+        (["blood","anemia","hemoglobin","platelet"], "hematology clinic OR multispeciality hospital OR general hospital"),
+    ]
+    for keywords, specialty in rules:
+        if any(w in q for w in keywords):
+            return specialty
+    return "multispeciality hospital OR general hospital OR medical clinic"
 
-# Search hospitals by GPS
-def search_hospitals_by_coords(lat, lon, specialty):
-    try:
-        all_hospitals = []
-        seen_names = set()
-        headers = {"User-Agent": "HealixAI/1.0"}
-        specialty_parts = [s.strip() for s in specialty.split("OR")]
-        search_terms = specialty_parts + [
-            "multispeciality hospital", "hospital", "clinic", "medical centre"
-        ]
-        for term in search_terms:
-            url = "https://nominatim.openstreetmap.org/search"
-            params = {
-                "q": term, "format": "json", "limit": 5, "addressdetails": 1,
-                "viewbox": f"{lon-0.1},{lat+0.1},{lon+0.1},{lat-0.1}", "bounded": 1
-            }
-            try:
-                response = requests.get(url, params=params, headers=headers, timeout=10)
-                results = response.json()
-                for r in results:
-                    name = r.get("display_name", "").split(",")[0]
-                    if name not in seen_names:
-                        seen_names.add(name)
-                        address = ", ".join(r.get("display_name", "").split(",")[1:4])
-                        hlat = float(r["lat"])
-                        hlon = float(r["lon"])
-                        all_hospitals.append({"name": name, "address": address, "lat": hlat, "lon": hlon})
-            except:
-                continue
-            if len(all_hospitals) >= 8:
-                break
-        return all_hospitals[:8]
-    except:
-        return []
+def search_hospitals(lat=None, lon=None, city=None, specialty="hospital"):
+    hospitals, seen = [], set()
+    headers = {"User-Agent":"HealixAI/1.0"}
+    terms = [s.strip() for s in specialty.split("OR")] + ["multispeciality hospital","hospital","clinic"]
+    for term in terms:
+        if lat and lon:
+            params = {"q":term,"format":"json","limit":5,"addressdetails":1,
+                      "viewbox":f"{lon-0.1},{lat+0.1},{lon+0.1},{lat-0.1}","bounded":1}
+        else:
+            params = {"q":f"{term} in {city}","format":"json","limit":5,"addressdetails":1}
+        try:
+            r = requests.get("https://nominatim.openstreetmap.org/search", params=params, headers=headers, timeout=10)
+            for h in r.json():
+                name = h.get("display_name","").split(",")[0]
+                if name not in seen:
+                    seen.add(name)
+                    addr = ", ".join(h.get("display_name","").split(",")[1:4])
+                    hospitals.append({"name":name,"address":addr,"lat":float(h["lat"]),"lon":float(h["lon"])})
+        except: continue
+        if len(hospitals) >= 8: break
+    return hospitals[:8]
 
-# Search hospitals by city
-def search_hospitals_by_city(city, specialty):
-    try:
-        all_hospitals = []
-        seen_names = set()
-        headers = {"User-Agent": "HealixAI/1.0"}
-        specialty_parts = [s.strip() for s in specialty.split("OR")]
-        search_terms = []
-        for part in specialty_parts:
-            search_terms.append(f"{part} in {city}")
-        search_terms += [
-            f"multispeciality hospital in {city}",
-            f"hospital in {city}",
-            f"clinic in {city}",
-            f"medical centre in {city}",
-        ]
-        for term in search_terms:
-            url = "https://nominatim.openstreetmap.org/search"
-            params = {"q": term, "format": "json", "limit": 5, "addressdetails": 1}
-            try:
-                response = requests.get(url, params=params, headers=headers, timeout=10)
-                results = response.json()
-                for r in results:
-                    name = r.get("display_name", "").split(",")[0]
-                    if name not in seen_names:
-                        seen_names.add(name)
-                        address = ", ".join(r.get("display_name", "").split(",")[1:4])
-                        lat = float(r["lat"])
-                        lon = float(r["lon"])
-                        all_hospitals.append({"name": name, "address": address, "lat": lat, "lon": lon})
-            except:
-                continue
-            if len(all_hospitals) >= 8:
-                break
-        return all_hospitals[:8]
-    except:
-        return []
+def save_booking(hospital, name, phone, age, date):
+    f = "bookings.csv"
+    exists = os.path.exists(f)
+    with open(f,"a",newline="") as fp:
+        w = csv.writer(fp)
+        if not exists: w.writerow(["Hospital","Name","Phone","Age","Date","Booked At"])
+        w.writerow([hospital,name,phone,age,date,datetime.now().strftime("%Y-%m-%d %H:%M")])
 
-# Save booking
-def save_booking(hospital_name, name, phone, age, date):
-    file = "bookings.csv"
-    exists = os.path.exists(file)
-    with open(file, "a", newline="") as f:
-        writer = csv.writer(f)
-        if not exists:
-            writer.writerow(["Hospital", "Name", "Phone", "Age", "Date", "Booked At"])
-        writer.writerow([hospital_name, name, phone, age, date,
-                        datetime.now().strftime("%Y-%m-%d %H:%M")])
+# ── Session state ──────────────────────────────────────────────────────────────
+for k,v in {"messages":[],"show_hospitals":False,"hospitals":[],"booking_hospital":None,
+            "detected_specialty":"multispeciality hospital OR general hospital",
+            "user_lat":None,"user_lon":None,"user_location":"","city":"",
+            "dark_mode":False,"page":"chat"}.items():
+    if k not in st.session_state: st.session_state[k] = v
 
-# Theme
-if "dark_mode" not in st.session_state:
-    st.session_state.dark_mode = True
-
-if st.session_state.dark_mode:
-    bg_color = "#0a0a1a"
-    bg_secondary = "#0d0d2b"
-    text_color = "#e0e0ff"
-    user_bg = "linear-gradient(135deg, #6a0dad, #9b30ff)"
-    bot_bg = "#0d1b2a"
-    border_color = "#00e5ff"
-    sidebar_bg = "#0a0a1a"
-    accent = "#00e5ff"
-    glow = "0 0 15px #00e5ff, 0 0 30px #6a0dad"
-    header_gradient = "linear-gradient(90deg, #00e5ff, #9b30ff)"
-    sub_color = "#a0a0cc"
-    button_bg = "#1a0a3a"
-    button_border = "#00e5ff"
-else:
-    bg_color = "#f0f0ff"
-    bg_secondary = "#e8e8ff"
-    text_color = "#0a0a2a"
-    user_bg = "linear-gradient(135deg, #6a0dad, #9b30ff)"
-    bot_bg = "#dde8ff"
-    border_color = "#6a0dad"
-    sidebar_bg = "#e0e0ff"
-    accent = "#6a0dad"
-    glow = "0 0 10px #9b30ff"
-    header_gradient = "linear-gradient(90deg, #6a0dad, #00bcd4)"
-    sub_color = "#444477"
-    button_bg = "#d0d0ff"
-    button_border = "#6a0dad"
-
-st.markdown(f"""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Rajdhani:wght@400;600&display=swap');
-    .stApp {{
-        background-color: {bg_color};
-        background-image: radial-gradient(ellipse at top, {bg_secondary} 0%, {bg_color} 70%);
-        color: {text_color};
-        font-family: 'Rajdhani', sans-serif;
-    }}
-    .healix-logo {{
-        width: 120px; height: 120px; border-radius: 50%;
-        animation: rotateLogo 8s linear infinite;
-        box-shadow: 0 0 30px #00e5ff, 0 0 60px #6a0dad;
-        display: block; margin: 0 auto;
-    }}
-    @keyframes rotateLogo {{
-        0% {{ transform: rotate(0deg); }}
-        100% {{ transform: rotate(360deg); }}
-    }}
-    .healix-header {{ text-align: center; padding: 20px 0 10px 0; }}
-    .healix-title {{
-        font-family: 'Orbitron', monospace; font-size: 3em; font-weight: 700;
-        background: {header_gradient}; -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent; letter-spacing: 4px; margin: 10px 0 0 0;
-    }}
-    .healix-subtitle {{ color: {sub_color}; font-size: 1em; letter-spacing: 2px; margin-top: 5px; }}
-    .healix-divider {{ border: none; height: 1px; background: {header_gradient}; box-shadow: {glow}; margin: 15px 0; }}
-    .message-container {{ display: flex; flex-direction: column; gap: 4px; margin: 10px 0; }}
-    .user-message {{
-        background: {user_bg}; color: white; padding: 12px 18px;
-        border-radius: 18px 18px 4px 18px; margin-left: auto; max-width: 80%;
-        font-size: 15px; line-height: 1.6; box-shadow: 0 0 10px #9b30ff88;
-    }}
-    .bot-message {{
-        background: {bot_bg}; color: {text_color}; padding: 12px 18px;
-        border-radius: 18px 18px 18px 4px; margin-right: auto; max-width: 80%;
-        font-size: 15px; line-height: 1.6; border: 1px solid {border_color};
-        box-shadow: 0 0 12px {border_color}55;
-    }}
-    .hospital-card {{
-        background: {bot_bg}; border: 1px solid {border_color};
-        border-radius: 12px; padding: 15px; margin: 8px 0;
-        box-shadow: 0 0 10px {border_color}44;
-    }}
-    .image-analysis-card {{
-        background: {bot_bg}; border: 1px solid {accent};
-        border-radius: 12px; padding: 15px; margin: 10px 0;
-        box-shadow: 0 0 15px {accent}44;
-    }}
-    .upload-section {{
-        border: 2px dashed {accent}; border-radius: 12px;
-        padding: 20px; text-align: center; margin: 10px 0;
-        background: {accent}11;
-    }}
-    .specialty-badge {{
-        display: inline-block; background: {accent}22;
-        border: 1px solid {accent}; border-radius: 20px;
-        padding: 4px 12px; font-size: 12px; color: {accent}; margin-bottom: 10px;
-    }}
-    .location-badge {{
-        display: inline-block; background: #00ff8822;
-        border: 1px solid #00ff88; border-radius: 20px;
-        padding: 4px 12px; font-size: 12px; color: #00ff88;
-        margin-bottom: 10px; margin-left: 8px;
-    }}
-    .timestamp {{ font-size: 11px; opacity: 0.5; margin: 2px 4px; letter-spacing: 1px; }}
-    .user-timestamp {{ text-align: right; color: {sub_color}; }}
-    .bot-timestamp {{ text-align: left; color: {sub_color}; }}
-    section[data-testid="stSidebar"] {{
-        background-color: {sidebar_bg} !important;
-        background-image: radial-gradient(ellipse at top, {bg_secondary} 0%, {sidebar_bg} 100%) !important;
-        border-right: 1px solid {border_color};
-    }}
-    .stButton > button {{
-        background: {button_bg} !important; color: {accent} !important;
-        border: 1px solid {button_border} !important; border-radius: 8px !important;
-        font-family: 'Rajdhani', sans-serif !important; font-size: 14px !important;
-        letter-spacing: 1px !important; transition: all 0.3s ease !important;
-    }}
-    .stButton > button:hover {{ box-shadow: {glow} !important; transform: scale(1.02) !important; }}
-    p, label, div, span, li {{ color: {text_color}; }}
-    h1, h2, h3 {{ color: {accent} !important; font-family: 'Orbitron', monospace !important; letter-spacing: 2px; }}
-    ::-webkit-scrollbar {{ width: 6px; }}
-    ::-webkit-scrollbar-track {{ background: {bg_color}; }}
-    ::-webkit-scrollbar-thumb {{ background: {accent}; border-radius: 3px; }}
-    </style>
-""", unsafe_allow_html=True)
-
-# Initialize session state
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "show_hospitals" not in st.session_state:
-    st.session_state.show_hospitals = False
-if "hospitals" not in st.session_state:
-    st.session_state.hospitals = []
-if "booking_hospital" not in st.session_state:
-    st.session_state.booking_hospital = None
-if "detected_specialty" not in st.session_state:
-    st.session_state.detected_specialty = "multispeciality hospital OR general hospital"
-if "user_lat" not in st.session_state:
-    st.session_state.user_lat = None
-if "user_lon" not in st.session_state:
-    st.session_state.user_lon = None
-if "user_location" not in st.session_state:
-    st.session_state.user_location = ""
-if "city" not in st.session_state:
-    st.session_state.city = ""
-
-# Get GPS
+# ── GPS ────────────────────────────────────────────────────────────────────────
 location = get_geolocation()
 if location:
     try:
-        lat = location["coords"]["latitude"]
-        lon = location["coords"]["longitude"]
+        lat, lon = location["coords"]["latitude"], location["coords"]["longitude"]
         if st.session_state.user_lat != lat:
             st.session_state.user_lat = lat
             st.session_state.user_lon = lon
             detected = get_city_from_coords(lat, lon)
             st.session_state.user_location = detected
             st.session_state.city = detected
-    except:
-        pass
+    except: pass
 
-# Sidebar
-with st.sidebar:
-    st.markdown(f"<h2 style='color:{accent};font-family:Orbitron;font-size:1em;letter-spacing:2px;'>⚙️ CONTROLS</h2>", unsafe_allow_html=True)
-    mode_label = "☀️ Light Mode" if st.session_state.dark_mode else "🌙 Dark Mode"
-    if st.button(mode_label, use_container_width=True):
-        st.session_state.dark_mode = not st.session_state.dark_mode
-        st.rerun()
-    st.markdown(f"<hr style='border-color:{border_color};'>", unsafe_allow_html=True)
-    st.markdown(f"<h2 style='color:{accent};font-family:Orbitron;font-size:1em;letter-spacing:2px;'>📍 LOCATION</h2>", unsafe_allow_html=True)
-    if st.session_state.user_location:
-        st.markdown(f"<p style='color:#00ff88;font-size:13px;'>📍 {st.session_state.user_location}</p>", unsafe_allow_html=True)
-        st.markdown(f"<p style='color:{sub_color};font-size:11px;'>✅ GPS detected</p>", unsafe_allow_html=True)
-    else:
-        st.markdown(f"<p style='color:{sub_color};font-size:13px;'>📍 Detecting location...</p>", unsafe_allow_html=True)
-    st.markdown(f"<hr style='border-color:{border_color};'>", unsafe_allow_html=True)
-    st.markdown(f"<h2 style='color:{accent};font-family:Orbitron;font-size:1em;letter-spacing:2px;'>💬 HISTORY</h2>", unsafe_allow_html=True)
-    if "messages" in st.session_state and st.session_state.messages:
-        for msg in st.session_state.messages:
-            if msg["role"] == "user":
-                truncated = msg["content"][:35] + "..." if len(msg["content"]) > 35 else msg["content"]
-                st.markdown(f"<p style='color:{sub_color};font-size:13px;'>🔹 {truncated}</p>", unsafe_allow_html=True)
-    else:
-        st.markdown(f"<p style='color:{sub_color};font-size:13px;'>No history yet</p>", unsafe_allow_html=True)
-    st.markdown(f"<hr style='border-color:{border_color};'>", unsafe_allow_html=True)
-    if st.button("🗑️ Clear History", use_container_width=True):
-        st.session_state.messages = []
-        st.rerun()
-    st.markdown(f"<hr style='border-color:{border_color};'>", unsafe_allow_html=True)
-    st.markdown(f"<h2 style='color:{accent};font-family:Orbitron;font-size:1em;letter-spacing:2px;'>📚 KNOWLEDGE</h2>", unsafe_allow_html=True)
-    st.markdown(f"<p style='color:{sub_color};font-size:13px;'>🧬 6 Medical Books Loaded</p>", unsafe_allow_html=True)
-    st.markdown(f"<hr style='border-color:{border_color};'>", unsafe_allow_html=True)
-    st.markdown(f"<p style='color:{sub_color};font-size:11px;text-align:center;'>HEALIX AI • Llama 3 + ChromaDB</p>", unsafe_allow_html=True)
+# ── CSS ────────────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=DM+Serif+Display&display=swap');
+*, *::before, *::after { box-sizing: border-box; }
 
-# Header
-st.markdown(f"""
-    <div class='healix-header'>
-        {img_tag}
-        <p class='healix-title'>HEALIX AI</p>
-        <p class='healix-subtitle'>⚡ AI-POWERED MEDICAL ASSISTANT ⚡</p>
-    </div>
-    <hr class='healix-divider'>
+.stApp { background:#F7F8FC; font-family:'Inter',system-ui,sans-serif; }
+#MainMenu { display:none!important; }
+footer { display:none!important; }
+.stDeployButton { display:none!important; }
+[data-testid="stToolbar"] { display:none!important; }
+.block-container { padding:0!important; max-width:100%!important; }
+
+/* ─────────────────────────────────────────────
+   SIDEBAR OPEN STATE
+   ───────────────────────────────────────────── */
+[data-testid="stSidebar"] {
+    background: #0F172A !important;
+    min-width: 260px !important;
+    max-width: 260px !important;
+}
+[data-testid="stSidebar"] .stMarkdown { color: #94A3B8; }
+[data-testid="stSidebarContent"] { padding: 0 !important; }
+
+/* The ‹ collapse arrow INSIDE the open sidebar */
+[data-testid="stSidebar"] [data-testid="stSidebarNavItems"],
+[data-testid="stSidebar"] button {
+    /* do NOT hide anything — let Streamlit render naturally */
+}
+
+/* ─────────────────────────────────────────────
+   SIDEBAR COLLAPSED STATE  ← THE KEY FIX
+   When sidebar is closed Streamlit renders a
+   thin strip with the › arrow. We must give it
+   a visible background + colored icon so the
+   user can see and click it.
+   ───────────────────────────────────────────── */
+[data-testid="collapsedControl"] {
+    background-color: #1E293B !important;
+    border-right: 2px solid #3B82F6 !important;
+    /* ensure it stays on top and is clickable */
+    z-index: 999 !important;
+    width: 2.5rem !important;
+    min-height: 100vh !important;
+    display: flex !important;
+    align-items: flex-start !important;
+    justify-content: center !important;
+    padding-top: 1rem !important;
+}
+
+/* The › SVG arrow icon inside the collapsed strip */
+[data-testid="collapsedControl"] svg {
+    fill: #60A5FA !important;
+    color: #60A5FA !important;
+    width: 1.2rem !important;
+    height: 1.2rem !important;
+}
+
+/* The actual button element wrapping the › icon */
+[data-testid="collapsedControl"] button {
+    background: transparent !important;
+    border: none !important;
+    color: #60A5FA !important;
+    cursor: pointer !important;
+    padding: 8px 6px !important;
+    border-radius: 6px !important;
+}
+[data-testid="collapsedControl"] button:hover {
+    background: rgba(96,165,250,0.15) !important;
+}
+
+/* Sidebar nav buttons */
+[data-testid="stSidebar"] .stButton > button {
+    background: transparent !important;
+    border: none !important;
+    color: #94A3B8 !important;
+    text-align: left !important;
+    justify-content: flex-start !important;
+    font-size: 13px !important;
+    padding: 8px 14px !important;
+    border-radius: 8px !important;
+    width: 100% !important;
+    margin: 1px 0 !important;
+}
+[data-testid="stSidebar"] .stButton > button:hover {
+    background: rgba(255,255,255,.05) !important;
+    color: #F1F5F9 !important;
+}
+
+/* Brand block */
+.hx-brand { padding:24px 20px 16px; border-bottom:1px solid rgba(255,255,255,0.07); display:flex; align-items:center; gap:12px; }
+.hx-logo { width:34px;height:34px;background:linear-gradient(135deg,#3B82F6,#06B6D4);border-radius:10px;display:flex;align-items:center;justify-content:center;font-family:'DM Serif Display',serif;color:white;font-size:17px;flex-shrink:0; }
+.hx-brand-name { font-size:14px;font-weight:600;color:#F1F5F9; }
+.hx-brand-tag { font-size:10px;color:#64748B;letter-spacing:.05em;text-transform:uppercase; }
+.hx-section-lbl { font-size:10px;font-weight:600;color:#475569;letter-spacing:.08em;text-transform:uppercase;padding:16px 20px 8px; }
+
+/* Location pill */
+.hx-loc { margin:8px 12px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);border-radius:8px;padding:10px 12px;display:flex;align-items:center;gap:8px; }
+.hx-loc-dot { width:6px;height:6px;background:#10B981;border-radius:50%;animation:pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1}50%{opacity:.4} }
+.hx-loc-text { font-size:12px;color:#6EE7B7; }
+.hx-loc-sub  { font-size:10px;color:#34D399;opacity:.7; }
+
+/* Recent chats */
+.hx-hist { padding:6px 12px;border-radius:8px;font-size:12px;color:#64748B;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:1px 8px; }
+.hx-hist:hover { background:rgba(255,255,255,.04);color:#94A3B8; }
+.hx-hist-dot { color:#3B82F6;margin-right:6px;font-size:8px; }
+
+/* Sidebar footer */
+.hx-sb-footer { margin-top:auto;padding:14px 12px;border-top:1px solid rgba(255,255,255,.07); }
+
+/* ── Topbar ── */
+.hx-topbar { background:white;border-bottom:1px solid #E2E8F0;padding:14px 32px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50; }
+.hx-topbar-title { font-size:15px;font-weight:600;color:#0F172A; }
+.hx-topbar-sub { font-size:12px;color:#94A3B8;margin-top:1px; }
+.hx-status { display:flex;align-items:center;gap:6px;background:#F0FDF4;border:1px solid #BBF7D0;padding:5px 10px;border-radius:20px;font-size:12px;color:#16A34A;font-weight:500; }
+.hx-status-dot { width:6px;height:6px;background:#22C55E;border-radius:50%; }
+
+/* ── Content ── */
+.hx-content { flex:1;padding:28px 32px;max-width:860px;width:100%;margin:0 auto; }
+.hx-welcome-sub {
+    text-align: center;
+}
+
+/* ── Welcome ── */
+.hx-welcome { text-align:center;padding:50px 0 32px; }
+.hx-welcome-icon { width:60px;height:60px;background:linear-gradient(135deg,#EFF6FF,#DBEAFE);border:1px solid #BFDBFE;border-radius:18px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:26px; }
+.hx-welcome-title { font-family:'DM Serif Display',serif;font-size:34px;color:#0F172A;letter-spacing:-.02em;margin:0 0 8px; }
+.hx-welcome-sub { font-size:14px;color:#64748B;max-width:400px;margin:0 auto;line-height:1.6;text-align:center;width:100%; }
+.hx-welcome-sub {text-align: center;}
+
+
+/* ── Chip buttons ── */
+div[data-testid="stHorizontalBlock"] .stButton > button {
+    background: white !important;
+    border: 1px solid #E2E8F0 !important;
+    color: #475569 !important;
+    border-radius: 20px !important;
+    padding: 6px 14px !important;
+    font-size: 12.5px !important;
+    font-weight: 400 !important;
+    transition: all .15s !important;
+}
+div[data-testid="stHorizontalBlock"] .stButton > button:hover {
+    border-color: #3B82F6 !important;
+    color: #3B82F6 !important;
+    background: #EFF6FF !important;
+}
+
+/* ── Messages ── */
+.hx-msgs { display:flex;flex-direction:column;gap:18px;margin-bottom:20px; }
+.hx-msg { display:flex;gap:10px;align-items:flex-start; }
+.hx-msg.user { flex-direction:row-reverse; }
+.hx-av { width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex-shrink:0; }
+.hx-av.bot { background:linear-gradient(135deg,#3B82F6,#06B6D4);color:white; }
+.hx-av.user { background:#F1F5F9;color:#475569; }
+.hx-bubble { max-width:78%;padding:12px 15px;border-radius:14px;font-size:13.5px;line-height:1.65; }
+.hx-bubble.bot { background:white;border:1px solid #E2E8F0;border-radius:4px 14px 14px 14px;color:#1E293B; }
+.hx-bubble.user { background:#0F172A;color:#F1F5F9;border-radius:14px 14px 4px 14px; }
+.hx-meta { font-size:11px;color:#CBD5E1;margin-top:4px;padding:0 4px; }
+.hx-msg.user .hx-meta { text-align:right; }
+.hx-sources { display:flex;flex-wrap:wrap;gap:5px;margin-top:8px; }
+.hx-src-pill { background:#EFF6FF;border:1px solid #BFDBFE;color:#2563EB;font-size:11px;padding:2px 8px;border-radius:20px;font-weight:500; }
+
+/* ── Image Analysis ── */
+.hx-analysis { background:white;border:1px solid #E2E8F0;border-radius:14px;padding:18px 20px;margin-top:14px; }
+.hx-analysis-hdr { display:flex;align-items:center;gap:8px;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #F1F5F9; }
+.hx-ai-badge { background:#FEF3C7;border:1px solid #FDE68A;color:#92400E;font-size:11px;font-weight:600;padding:2px 7px;border-radius:5px; }
+.hx-analysis-body { font-size:13px;color:#334155;line-height:1.75;white-space:pre-wrap; }
+
+/* ── Hospital section ── */
+.hx-sec-hdr { display:flex;align-items:center;gap:10px;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid #F1F5F9; }
+.hx-sec-icon { width:38px;height:38px;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:17px; }
+.hx-sec-title { font-size:15px;font-weight:600;color:#0F172A;margin:0 0 1px; }
+.hx-sec-sub { font-size:12px;color:#94A3B8; }
+.hx-hosp-grid { display:flex;flex-direction:column;gap:8px;margin-top:14px; }
+.hx-hosp-card { background:white;border:1px solid #E2E8F0;border-radius:12px;padding:14px 16px;display:flex;align-items:flex-start;justify-content:space-between;gap:10px;transition:border-color .15s,box-shadow .15s; }
+.hx-hosp-card:hover { border-color:#93C5FD;box-shadow:0 2px 8px rgba(59,130,246,.08); }
+.hx-hosp-ico { width:38px;height:38px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0; }
+.hx-hosp-ico.hospital { background:#FEF2F2; } .hx-hosp-ico.clinic { background:#F0FDF4; } .hx-hosp-ico.multi { background:#EFF6FF; }
+.hx-hosp-name { font-size:13.5px;font-weight:600;color:#0F172A;margin:0 0 2px; }
+.hx-hosp-addr { font-size:12px;color:#94A3B8;margin:0 0 5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.hx-hosp-type { display:inline-flex;align-items:center;gap:3px;background:#F8FAFC;border:1px solid #E2E8F0;color:#64748B;font-size:11px;padding:2px 6px;border-radius:4px; }
+
+/* ── Booking ── */
+.hx-book-card { background:white;border:1px solid #E2E8F0;border-radius:14px;padding:22px;margin-top:20px; }
+.hx-book-hosp { background:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;padding:10px 13px;font-size:13px;font-weight:500;color:#0F172A;margin-bottom:18px;display:flex;align-items:center;gap:7px; }
+.hx-confirm { background:#F0FDF4;border:1px solid #BBF7D0;border-radius:12px;padding:18px 20px;margin-top:14px; }
+.hx-confirm-title { font-size:14px;font-weight:600;color:#14532D;margin:0 0 10px; }
+.hx-confirm-row { display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #D1FAE5;font-size:13px; }
+.hx-confirm-row:last-child { border-bottom:none; }
+.hx-confirm-lbl { color:#166534; } .hx-confirm-val { color:#14532D;font-weight:500; }
+
+/* ── Form elements ── */
+.stTextInput input,.stNumberInput input,.stTextArea textarea,.stDateInput input {
+    border:1px solid #E2E8F0!important;border-radius:8px!important;
+    font-family:'Inter',sans-serif!important;font-size:13.5px!important;
+    padding:9px 13px!important;background:white!important;color:#0F172A!important;
+}
+.stTextInput input:focus,.stTextArea textarea:focus {
+    border-color:#3B82F6!important;box-shadow:0 0 0 3px rgba(59,130,246,.1)!important;
+}
+
+/* Main action buttons */
+.block-container .stButton > button {
+    font-family:'Inter',sans-serif!important;font-size:13px!important;font-weight:500!important;
+    border-radius:8px!important;padding:9px 16px!important;
+    background:#0F172A!important;color:white!important;
+    border:1px solid #0F172A!important;transition:all .15s!important;
+}
+.block-container .stButton > button:hover { background:#1E293B!important; }
+
+.stChatInput,[data-testid="stChatInput"] { border:1px solid #E2E8F0!important;border-radius:12px!important;background:white!important; }
+[data-testid="stChatInputTextArea"] { font-family:'Inter',sans-serif!important;font-size:13.5px!important; }
+.stRadio label { font-size:13px!important;color:#334155!important; }
+hr { border:none!important;border-top:1px solid #F1F5F9!important;margin:20px 0!important; }
+[data-testid="stFileUploader"] { border:1.5px dashed #CBD5E1!important;border-radius:12px!important;background:white!important; }
+[data-testid="stSidebar"] .stCheckbox label { color:#94A3B8!important;font-size:13px!important; }
+</style>
 """, unsafe_allow_html=True)
 
-# Load chain
-@st.cache_resource(show_spinner="🧬 Initializing HEALIX AI...")
+# Dark mode overlay
+if st.session_state.dark_mode:
+    st.markdown("""<style>
+    .stApp { background:#0F172A!important; }
+    .hx-topbar { background:#1E293B!important;border-color:#334155!important; }
+    .hx-topbar-title { color:#F1F5F9!important; }
+    .hx-topbar-sub { color:#64748B!important; }
+    .hx-welcome-title { color:#F1F5F9!important; }
+    .hx-welcome-sub { color:#94A3B8!important; }
+    .hx-bubble.bot { background:#1E293B!important;border-color:#334155!important;color:#E2E8F0!important; }
+    .hx-hosp-card { background:#1E293B!important;border-color:#334155!important; }
+    .hx-hosp-name { color:#F1F5F9!important; }
+    .hx-book-card { background:#1E293B!important;border-color:#334155!important; }
+    .hx-book-hosp { background:#0F172A!important;border-color:#334155!important;color:#F1F5F9!important; }
+    .hx-analysis { background:#1E293B!important;border-color:#334155!important; }
+    .hx-analysis-body { color:#CBD5E1!important; }
+    .stTextInput input,.stNumberInput input,.stTextArea textarea,.stDateInput input {
+        background:#1E293B!important;color:#F1F5F9!important;border-color:#334155!important;
+    }
+    div[data-testid="stHorizontalBlock"] .stButton > button {
+        background:#1E293B!important;border-color:#334155!important;color:#94A3B8!important;
+    }
+    /* Dark mode: keep collapsed control visible */
+    [data-testid="collapsedControl"] {
+        background-color: #0F172A !important;
+        border-right: 2px solid #3B82F6 !important;
+    }
+    </style>""", unsafe_allow_html=True)
+
+# ── Sidebar ────────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("""
+    <div class="hx-brand">
+        <div class="hx-logo">H</div>
+        <div>
+            <div class="hx-brand-name">Healix AI</div>
+            <div class="hx-brand-tag">Medical Assistant</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="hx-section-lbl">Navigation</div>', unsafe_allow_html=True)
+    nav_items = [
+        ("💬 Chat", "chat"),
+        ("🔬 Image Analysis", "image"),
+        ("🏥 Find Hospitals", "hospitals"),
+        ("📅 Appointments", "appointments"),
+    ]
+    for label, key in nav_items:
+        if st.button(label, key=f"nav_{key}", use_container_width=True):
+            st.session_state.page = key
+            if key == "hospitals":
+                st.session_state.show_hospitals = True
+            st.rerun()
+
+    st.markdown('<div class="hx-section-lbl">Location</div>', unsafe_allow_html=True)
+    if st.session_state.user_location:
+        st.markdown(f"""
+        <div class="hx-loc">
+            <div class="hx-loc-dot"></div>
+            <div>
+                <div class="hx-loc-text">{st.session_state.user_location}</div>
+                <div class="hx-loc-sub">GPS · live</div>
+            </div>
+        </div>""", unsafe_allow_html=True)
+    else:
+        st.markdown('<div style="padding:4px 20px 12px;font-size:12px;color:#64748B;">Detecting location…</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="hx-section-lbl">Theme</div>', unsafe_allow_html=True)
+    dark = st.checkbox("🌙 Dark mode", value=st.session_state.dark_mode, key="dark_toggle")
+    if dark != st.session_state.dark_mode:
+        st.session_state.dark_mode = dark
+        st.rerun()
+
+    st.markdown('<div class="hx-section-lbl">Recent chats</div>', unsafe_allow_html=True)
+    user_msgs = [m for m in st.session_state.messages if m["role"]=="user"]
+    if user_msgs:
+        for m in user_msgs[-6:]:
+            txt = m["content"][:36]+"…" if len(m["content"])>36 else m["content"]
+            st.markdown(f'<div class="hx-hist"><span class="hx-hist-dot">●</span>{txt}</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div style="font-size:12px;color:#475569;padding:4px 20px;">No conversations yet</div>', unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="hx-sb-footer">
+        <div style="font-size:10px;color:#475569;text-align:center;">Powered by Llama 3 · ChromaDB · RAG</div>
+    </div>""", unsafe_allow_html=True)
+
+    if st.session_state.messages:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("🗑 Clear conversation", use_container_width=True):
+            st.session_state.messages = []
+            st.rerun()
+
+# ── Topbar ─────────────────────────────────────────────────────────────────────
+loc_status = st.session_state.user_location or "Locating…"
+st.markdown(f"""
+<div class="hx-topbar">
+    <div>
+        <div class="hx-topbar-title">Medical AI Assistant</div>
+        <div class="hx-topbar-sub">Ask anything about health, symptoms, or medications</div>
+    </div>
+    <div class="hx-status"><div class="hx-status-dot"></div>Online · {loc_status}</div>
+</div>
+<div class="hx-content">
+""", unsafe_allow_html=True)
+
+# ── Load chain ─────────────────────────────────────────────────────────────────
+@st.cache_resource(show_spinner="Loading medical knowledge base…")
 def load_chain():
     return build_rag_chain()
-
 chain = load_chain()
 
-# Welcome
-if not st.session_state.messages:
-    location_text = f"📍 <b style='color:#00ff88;'>{st.session_state.user_location}</b>" if st.session_state.user_location else "📍 Allow location access for nearby hospitals"
-    st.markdown(f"""
-        <div style='text-align:center;margin:40px auto;'>
-            <h1 style='font-family:Orbitron;font-size:2.8em;background:{header_gradient};
-            -webkit-background-clip:text;-webkit-text-fill-color:transparent;
-            letter-spacing:6px;margin-bottom:10px;'>WELCOME</h1>
-            <p style='font-size:1.4em;color:{sub_color};margin-top:10px;letter-spacing:1px;'>
-                I'm <span style='color:{accent};font-weight:bold;font-family:Orbitron;font-size:1.1em;'>HEALIX</span> — How can I help you?
-            </p>
-            <p style='font-size:0.9em;color:{sub_color};opacity:0.8;margin-top:15px;'>{location_text}</p>
-            <p style='font-size:0.85em;color:{sub_color};opacity:0.6;margin-top:8px;'>
-                💬 Ask a question OR 📸 Upload an image for analysis
-            </p>
-        </div>
-    """, unsafe_allow_html=True)
+# ── PAGE: Chat ─────────────────────────────────────────────────────────────────
+if st.session_state.page == "chat":
+    if not st.session_state.messages:
+        st.markdown("""
+        <div class="hx-welcome">
+            <div class="hx-welcome-icon">🩺</div>
+            <h1 class="hx-welcome-title">How can I help you today?</h1>
+            <p style="text-justify: center;">Ask about symptoms, conditions, medications, or upload a medical image for AI analysis.</p>
+        </div>""", unsafe_allow_html=True)
 
-# ---- IMAGE UPLOAD SECTION ----
-uploaded_file = st.file_uploader(
-    "📸",
-    type=["jpg", "jpeg", "png", "webp"],
-    label_visibility="visible"
-)
+        chip_queries = [
+            "What causes high blood pressure?",
+            "Symptoms of diabetes",
+            "Is my rash serious?",
+            "Common cold vs flu",
+            "When to see a doctor?",
+        ]
+        cols = st.columns(len(chip_queries))
+        for i, q in enumerate(chip_queries):
+            with cols[i]:
+                if st.button(q, key=f"chip_{i}", use_container_width=True):
+                    now = datetime.now().strftime("%I:%M %p")
+                    st.session_state.messages.append({"role":"user","content":q,"time":now})
+                    with st.spinner("Searching knowledge base…"):
+                        answer, sources = ask(chain, q)
+                    st.session_state.messages.append({"role":"assistant","content":answer,"time":now,"sources":sources})
+                    st.session_state.detected_specialty = detect_specialty(q)
+                    st.session_state.show_hospitals = True
+                    st.session_state.hospitals = []
+                    st.rerun()
 
-if uploaded_file:
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        st.image(uploaded_file, caption="Uploaded Image", use_container_width=True)
-    with col2:
-        if st.button("🔬 Analyze Image", use_container_width=True):
-            with st.spinner("🔬 Analyzing your image..."):
-                image_bytes = uploaded_file.read()
-                mime_type = f"image/{uploaded_file.name.split('.')[-1].lower()}"
-                if mime_type == "image/jpg":
-                    mime_type = "image/jpeg"
-                analysis = analyze_medical_image(image_bytes, mime_type)
+    if st.session_state.messages:
+        st.markdown('<div class="hx-msgs">', unsafe_allow_html=True)
+        for m in st.session_state.messages:
+            if m["role"] == "user":
+                st.markdown(f"""
+                <div class="hx-msg user">
+                    <div class="hx-av user">You</div>
+                    <div><div class="hx-bubble user">{m["content"]}</div><div class="hx-meta">{m.get("time","")}</div></div>
+                </div>""", unsafe_allow_html=True)
+            else:
+                srcs = "".join(f'<span class="hx-src-pill">{s}</span>' for s in m.get("sources",[]))
+                srcs_html = f'<div class="hx-sources">{srcs}</div>' if srcs else ""
+                st.markdown(f"""
+                <div class="hx-msg bot">
+                    <div class="hx-av bot">H</div>
+                    <div><div class="hx-bubble bot">{m["content"]}{srcs_html}</div><div class="hx-meta">{m.get("time","")}</div></div>
+                </div>""", unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-            st.markdown(f"""
-                <div class='image-analysis-card'>
-                    <h4 style='color:{accent};margin:0 0 10px 0;'>🔬 AI Image Analysis Result</h4>
-                    <p style='color:{text_color};white-space:pre-wrap;font-size:14px;'>{analysis}</p>
-                </div>
-            """, unsafe_allow_html=True)
+# ── PAGE: Image Analysis ───────────────────────────────────────────────────────
+elif st.session_state.page == "image":
+    st.markdown("""
+    <div style="padding:24px 0 16px;">
+        <div style="font-size:22px;font-weight:700;color:#0F172A;margin-bottom:4px;">🔬 Medical Image Analysis</div>
+        <div style="font-size:13px;color:#94A3B8;">Upload a photo and get instant AI-powered analysis</div>
+    </div>""", unsafe_allow_html=True)
 
-            # Auto detect specialty from analysis
-            specialty = detect_specialty(analysis)
-            st.session_state.detected_specialty = specialty
-            st.session_state.show_hospitals = True
-            st.session_state.hospitals = []
+    uploaded = st.file_uploader("Upload a photo of your skin, wound, rash, or any medical image",
+                                type=["jpg","jpeg","png","webp"], label_visibility="visible")
+    if uploaded:
+        c1, c2 = st.columns(2)
+        with c1:
+            st.image(uploaded, use_container_width=True)
+        with c2:
+            st.markdown('<div style="padding:10px 0;font-size:13px;font-weight:500;color:#0F172A;">Image ready ✅</div>', unsafe_allow_html=True)
+            if st.button("Analyze image →", key="analyze_btn", use_container_width=True):
+                with st.spinner("Analyzing…"):
+                    img_bytes = uploaded.read()
+                    mime = f"image/{uploaded.name.split('.')[-1].lower()}".replace("image/jpg","image/jpeg")
+                    analysis = analyze_medical_image(img_bytes, mime)
+                st.markdown(f"""
+                <div class="hx-analysis">
+                    <div class="hx-analysis-hdr">
+                        <div class="hx-ai-badge">AI ANALYSIS</div>
+                        <div style="font-size:14px;font-weight:600;color:#0F172A;">Medical Image Report</div>
+                    </div>
+                    <div class="hx-analysis-body">{analysis}</div>
+                </div>""", unsafe_allow_html=True)
+                now = datetime.now().strftime("%I:%M %p")
+                st.session_state.messages += [
+                    {"role":"user","content":"📸 Uploaded medical image for analysis","time":now},
+                    {"role":"assistant","content":analysis,"time":now,"sources":[]}
+                ]
+                st.session_state.detected_specialty = detect_specialty(analysis)
+                st.session_state.show_hospitals = True
+                st.session_state.hospitals = []
 
-            # Add to chat history
-            now = datetime.now().strftime("%I:%M %p")
-            st.session_state.messages.append({
-                "role": "user",
-                "content": "📸 Uploaded medical image for analysis",
-                "time": now
-            })
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": analysis,
-                "time": now,
-                "sources": []
-            })
+# ── PAGE: Find Hospitals ───────────────────────────────────────────────────────
+elif st.session_state.page == "hospitals":
+    st.session_state.show_hospitals = True
+    st.markdown("""
+    <div style="padding:24px 0 16px;">
+        <div style="font-size:22px;font-weight:700;color:#0F172A;margin-bottom:4px;">🏥 Find Hospitals</div>
+        <div style="font-size:13px;color:#94A3B8;">Search nearby hospitals and clinics</div>
+    </div>""", unsafe_allow_html=True)
 
-st.markdown(f"<hr style='border-color:{border_color};margin:15px 0;'>", unsafe_allow_html=True)
+# ── PAGE: Appointments ─────────────────────────────────────────────────────────
+elif st.session_state.page == "appointments":
+    st.markdown("""
+    <div style="padding:24px 0 16px;">
+        <div style="font-size:22px;font-weight:700;color:#0F172A;margin-bottom:4px;">📅 My Appointments</div>
+        <div style="font-size:13px;color:#94A3B8;">Your booked appointments</div>
+    </div>""", unsafe_allow_html=True)
 
-# Display chat history
-for msg in st.session_state.messages:
-    if msg["role"] == "user":
-        st.markdown(f"""
-            <div class='message-container'>
-                <div class='user-message'>{msg["content"]}</div>
-                <div class='timestamp user-timestamp'>🕐 {msg.get("time", "")}</div>
-            </div>
-        """, unsafe_allow_html=True)
+    f = "bookings.csv"
+    if os.path.exists(f):
+        import pandas as pd
+        df = pd.read_csv(f)
+        if df.empty:
+            st.info("No appointments booked yet.")
+        else:
+            st.dataframe(df, use_container_width=True)
     else:
-        st.markdown(f"""
-            <div class='message-container'>
-                <div class='bot-message'>🤖 {msg["content"]}</div>
-                <div class='timestamp bot-timestamp'>🕐 {msg.get("time", "")}</div>
-            </div>
-        """, unsafe_allow_html=True)
-        if msg.get("sources"):
-            with st.expander("📚 View Sources"):
-                for s in msg["sources"]:
-                    st.markdown(f"<p style='color:{accent};'>▸ {s}</p>", unsafe_allow_html=True)
+        st.info("No appointments booked yet. Find a hospital and book an appointment!")
+    st.stop()
 
-# Hospital section
+# ── Hospital finder ─────────────────────────────────────────────────────────────
 if st.session_state.show_hospitals:
-    st.markdown(f"<hr style='border-color:{border_color};'>", unsafe_allow_html=True)
+    st.markdown("<hr>", unsafe_allow_html=True)
     specialty = st.session_state.detected_specialty
-    first_specialty = specialty.split("OR")[0].strip().title()
+    first_spec = specialty.split("OR")[0].strip().title()
 
     st.markdown(f"""
-        <div style='text-align:center;margin:10px 0;'>
-            <h3 style='color:{accent};'>🏥 Nearby Hospitals & Clinics</h3>
-            <div class='specialty-badge'>🎯 {first_specialty}</div>
-            {f"<div class='location-badge'>📍 {st.session_state.user_location}</div>" if st.session_state.user_location else ""}
+    <div class="hx-sec-hdr">
+        <div class="hx-sec-icon">🏥</div>
+        <div>
+            <div class="hx-sec-title">Nearby hospitals & clinics</div>
+            <div class="hx-sec-sub">Based on your query · <span style="color:#2563EB;">{first_spec}</span></div>
         </div>
-    """, unsafe_allow_html=True)
+    </div>""", unsafe_allow_html=True)
 
     use_gps = st.session_state.user_lat is not None
     if use_gps:
-        st.success(f"📍 GPS detected: **{st.session_state.user_location}**")
-        search_mode = st.radio(
-            "Search using:",
-            ["📍 My exact GPS location", "🏙️ Enter area manually"],
-            horizontal=True
-        )
+        c1, c2 = st.columns(2)
+        with c1: mode = st.radio("Search by", ["GPS location","Enter area manually"], horizontal=True, label_visibility="collapsed")
+        with c2: st.success(f"📍 {st.session_state.user_location}")
     else:
-        st.warning("⚠️ Allow location in browser OR enter your area manually below.")
-        search_mode = "🏙️ Enter area manually"
+        st.info("Allow location access, or enter your area below.")
+        mode = "Enter area manually"
 
     city_input = ""
-    if search_mode == "🏙️ Enter area manually":
-        city_input = st.text_input(
-            "📍 Enter your area or city:",
-            placeholder="e.g. Medchal, Kukatpally, Hyderabad...",
-            value=st.session_state.city
-        )
+    if not use_gps or mode == "Enter area manually":
+        city_input = st.text_input("Your area or city", placeholder="e.g. Bandra, Mumbai…", value=st.session_state.city)
 
-    if st.button("🔍 Search Hospitals & Clinics", use_container_width=True):
-        with st.spinner("🔍 Searching nearby hospitals & clinics..."):
-            if search_mode == "📍 My exact GPS location" and use_gps:
-                hospitals = search_hospitals_by_coords(
-                    st.session_state.user_lat,
-                    st.session_state.user_lon,
-                    specialty
-                )
+    if st.button("Search hospitals →", use_container_width=True):
+        with st.spinner("Finding nearby hospitals…"):
+            if use_gps and mode == "GPS location":
+                hospitals = search_hospitals(lat=st.session_state.user_lat, lon=st.session_state.user_lon, specialty=specialty)
             else:
                 city = city_input or st.session_state.city
                 st.session_state.city = city
-                hospitals = search_hospitals_by_city(city, specialty)
+                hospitals = search_hospitals(city=city, specialty=specialty)
             st.session_state.hospitals = hospitals
 
     if st.session_state.hospitals:
-        st.markdown(f"<p style='color:{accent};margin:10px 0;'>✅ Found <b>{len(st.session_state.hospitals)}</b> hospitals & clinics nearby:</p>", unsafe_allow_html=True)
+        st.markdown(f'<div style="font-size:13px;color:#64748B;margin:14px 0 4px;">Found <strong style="color:#0F172A;">{len(st.session_state.hospitals)}</strong> results near you</div>', unsafe_allow_html=True)
 
-        if use_gps and search_mode == "📍 My exact GPS location":
-            m = folium.Map(location=[st.session_state.user_lat, st.session_state.user_lon], zoom_start=14)
-            folium.Marker(
-                [st.session_state.user_lat, st.session_state.user_lon],
-                popup="You are here", tooltip="📍 Your Location",
-                icon=folium.Icon(color="blue", icon="user")
-            ).add_to(m)
-        else:
-            first = st.session_state.hospitals[0]
-            m = folium.Map(location=[first["lat"], first["lon"]], zoom_start=13)
-
+        first = st.session_state.hospitals[0]
+        center = [st.session_state.user_lat, st.session_state.user_lon] if use_gps and mode=="GPS location" else [first["lat"],first["lon"]]
+        m = folium.Map(location=center, zoom_start=14, tiles="CartoDB positron")
+        if use_gps and mode=="GPS location":
+            folium.Marker(center, popup="You", tooltip="📍 You", icon=folium.Icon(color="blue",icon="user")).add_to(m)
         for h in st.session_state.hospitals:
-            folium.Marker(
-                [h["lat"], h["lon"]], popup=h["name"], tooltip=h["name"],
-                icon=folium.Icon(color="red", icon="plus-sign")
-            ).add_to(m)
-        st_folium(m, width=700, height=400)
+            folium.Marker([h["lat"],h["lon"]], popup=h["name"], tooltip=h["name"], icon=folium.Icon(color="red",icon="plus-sign")).add_to(m)
+        st_folium(m, width=None, height=340)
 
+        st.markdown('<div class="hx-hosp-grid">', unsafe_allow_html=True)
         for i, h in enumerate(st.session_state.hospitals):
-            name_lower = h["name"].lower()
-            if "clinic" in name_lower:
-                icon = "🏪"; type_label = "Clinic"
-            elif "multispeciality" in name_lower or "multi" in name_lower:
-                icon = "🏨"; type_label = "Multispeciality Hospital"
-            else:
-                icon = "🏥"; type_label = "Hospital"
-
+            nl = h["name"].lower()
+            if "clinic" in nl: ico, lbl, cls = "🏪","Clinic","clinic"
+            elif any(x in nl for x in ["multispeciality","multi"]): ico, lbl, cls = "🏨","Multispeciality","multi"
+            else: ico, lbl, cls = "🏥","Hospital","hospital"
             st.markdown(f"""
-                <div class='hospital-card'>
-                    <h4 style='color:{accent};margin:0;'>{icon} {h['name']}</h4>
-                    <p style='color:{sub_color};margin:5px 0;font-size:13px;'>📍 {h['address']}</p>
-                    <p style='color:{sub_color};margin:0;font-size:12px;'>
-                        🏷️ Type: <b>{type_label}</b> &nbsp;|&nbsp;
-                        🎯 For: <b>{first_specialty}</b>
-                    </p>
+            <div class="hx-hosp-card">
+                <div class="hx-hosp-ico {cls}">{ico}</div>
+                <div style="flex:1;min-width:0;">
+                    <div class="hx-hosp-name">{h["name"]}</div>
+                    <div class="hx-hosp-addr">📍 {h["address"]}</div>
+                    <div class="hx-hosp-type">🏷 {lbl}</div>
                 </div>
-            """, unsafe_allow_html=True)
-            if st.button(f"📅 Book — {h['name'][:35]}", key=f"book_{i}"):
+            </div>""", unsafe_allow_html=True)
+            if st.button("Book appointment", key=f"book_{i}"):
                 st.session_state.booking_hospital = h["name"]
                 st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    elif len(st.session_state.hospitals) == 0 and st.session_state.city:
-        st.warning("⚠️ No results found. Try your district or nearest big city!")
+    elif not st.session_state.hospitals and st.session_state.city:
+        st.warning("No results found. Try your district or nearest large city.")
 
-    if st.session_state.booking_hospital:
-        st.markdown(f"<hr style='border-color:{border_color};'>", unsafe_allow_html=True)
-        st.markdown(f"""
-            <div style='text-align:center;'>
-                <h3 style='color:{accent};'>📋 Book Appointment</h3>
-                <p style='color:{sub_color};'>🏥 <b style='color:{accent};'>{st.session_state.booking_hospital}</b></p>
-            </div>
-        """, unsafe_allow_html=True)
+# ── Booking form ───────────────────────────────────────────────────────────────
+if st.session_state.booking_hospital:
+    st.markdown(f"""
+    <div class="hx-book-card">
+        <div style="font-size:15px;font-weight:600;color:#0F172A;margin-bottom:14px;">Book an appointment</div>
+        <div class="hx-book-hosp">🏥 {st.session_state.booking_hospital}</div>
+    </div>""", unsafe_allow_html=True)
 
-        name = st.text_input("👤 Full Name:", placeholder="Enter your full name")
-        phone = st.text_input("📞 Phone Number:", placeholder="Enter your phone number")
-        age = st.number_input("🎂 Age:", min_value=1, max_value=120, value=25)
-        date = st.date_input("📅 Preferred Date:", min_value=datetime.today())
+    c1, c2 = st.columns(2)
+    with c1:
+        name = st.text_input("Full name", placeholder="Your full name")
+        age  = st.number_input("Age", min_value=1, max_value=120, value=30)
+    with c2:
+        phone = st.text_input("Phone number", placeholder="+91 00000 00000")
+        date  = st.date_input("Preferred date", min_value=datetime.today())
 
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("✅ Confirm Booking", use_container_width=True):
-                if name and phone:
-                    save_booking(st.session_state.booking_hospital, name, phone, age, str(date))
-                    st.success("✅ Appointment Booked Successfully!")
-                    st.markdown(f"""
-                        <div class='hospital-card'>
-                            <h4 style='color:{accent};'>🎉 Booking Confirmed!</h4>
-                            <p style='color:{sub_color};'>🏥 <b>{st.session_state.booking_hospital}</b></p>
-                            <p style='color:{sub_color};'>👤 Name: <b>{name}</b></p>
-                            <p style='color:{sub_color};'>📞 Phone: <b>{phone}</b></p>
-                            <p style='color:{sub_color};'>🎂 Age: <b>{age}</b></p>
-                            <p style='color:{sub_color};'>📅 Date: <b>{date}</b></p>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    st.balloons()
-                    st.session_state.booking_hospital = None
-                else:
-                    st.error("⚠️ Please fill in Name and Phone!")
-        with col2:
-            if st.button("❌ Cancel", use_container_width=True):
+    c3, c4 = st.columns(2)
+    with c3:
+        if st.button("Confirm booking →", use_container_width=True):
+            if name and phone:
+                save_booking(st.session_state.booking_hospital, name, phone, age, str(date))
+                st.success("Appointment booked!")
+                st.markdown(f"""
+                <div class="hx-confirm">
+                    <div class="hx-confirm-title">✓ Booking confirmed</div>
+                    <div class="hx-confirm-row"><span class="hx-confirm-lbl">Hospital</span><span class="hx-confirm-val">{st.session_state.booking_hospital}</span></div>
+                    <div class="hx-confirm-row"><span class="hx-confirm-lbl">Patient</span><span class="hx-confirm-val">{name}, {age} yrs</span></div>
+                    <div class="hx-confirm-row"><span class="hx-confirm-lbl">Phone</span><span class="hx-confirm-val">{phone}</span></div>
+                    <div class="hx-confirm-row"><span class="hx-confirm-lbl">Date</span><span class="hx-confirm-val">{date}</span></div>
+                </div>""", unsafe_allow_html=True)
+                st.balloons()
                 st.session_state.booking_hospital = None
-                st.rerun()
+            else:
+                st.error("Please fill in your name and phone number.")
+    with c4:
+        if st.button("Cancel", use_container_width=True):
+            st.session_state.booking_hospital = None
+            st.rerun()
 
-# Chat input
-if prompt := st.chat_input("⚡ Ask HEALIX AI anything medical..."):
-    now = datetime.now().strftime("%I:%M %p")
-    st.session_state.messages.append({"role": "user", "content": prompt, "time": now})
+st.markdown("</div>", unsafe_allow_html=True)
 
-    with st.spinner("🔍 Scanning medical knowledge base..."):
-        answer, sources = ask(chain, prompt)
-
-    st.session_state.messages.append({
-        "role": "assistant", "content": answer,
-        "time": now, "sources": sources
-    })
-
-    st.session_state.detected_specialty = detect_specialty(prompt)
-    st.session_state.show_hospitals = True
-    st.session_state.hospitals = []
-    st.session_state.booking_hospital = None
-    st.rerun()
+# ── Chat input ────────────────────────────────────────────────────────────────
+if st.session_state.page == "chat":
+    if prompt := st.chat_input("Ask Healix anything about your health…"):
+        now = datetime.now().strftime("%I:%M %p")
+        st.session_state.messages.append({"role":"user","content":prompt,"time":now})
+        with st.spinner("Searching knowledge base…"):
+            answer, sources = ask(chain, prompt)
+        st.session_state.messages.append({"role":"assistant","content":answer,"time":now,"sources":sources})
+        st.session_state.detected_specialty = detect_specialty(prompt)
+        st.session_state.show_hospitals = True
+        st.session_state.hospitals = []
+        st.session_state.booking_hospital = None
+        st.rerun()
