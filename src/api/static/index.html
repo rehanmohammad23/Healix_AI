@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Healix AI - Premium Medical Assistant</title>
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&family=DM+Serif+Display&display=swap" rel="stylesheet">
+    
+    <!-- Leaflet.css (Maps) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    
+    <!-- Bespoke Stylesheet -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="light-mode">
+    <div class="app-container">
+        
+        <!-- Sidebar Navigation -->
+        <aside id="sidebar">
+            <div class="sidebar-brand">
+                <div class="brand-logo">H</div>
+                <div class="brand-info">
+                    <span class="brand-name">Healix AI</span>
+                    <span class="brand-tag">Medical Assistant</span>
+                </div>
+            </div>
+            
+            <div class="sidebar-section-label">Navigation</div>
+            <nav class="sidebar-nav">
+                <button class="nav-item active" id="nav-chat" onclick="switchView('chat')">
+                    <span class="nav-icon">💬</span>
+                    <span class="nav-text">Chat Assistant</span>
+                </button>
+                <button class="nav-item" id="nav-image" onclick="switchView('image')">
+                    <span class="nav-icon">🔬</span>
+                    <span class="nav-text">Image Analysis</span>
+                </button>
+                <button class="nav-item" id="nav-hospitals" onclick="switchView('hospitals')">
+                    <span class="nav-icon">🏥</span>
+                    <span class="nav-text">Find Hospitals</span>
+                </button>
+                <button class="nav-item" id="nav-appointments" onclick="switchView('appointments')">
+                    <span class="nav-icon">📅</span>
+                    <span class="nav-text">Appointments</span>
+                </button>
+            </nav>
+            
+            <div class="sidebar-section-label">Location</div>
+            <div id="location-indicator" class="location-pill">
+                <span class="loc-dot pulsing"></span>
+                <div class="loc-details">
+                    <span class="loc-text" id="loc-status-text">Detecting location…</span>
+                    <span class="loc-sub">GPS · Live</span>
+                </div>
+            </div>
+            
+            <div class="sidebar-section-label">Theme</div>
+            <!-- Sidebar toggle button moved to header -->
+            
+            <div class="sidebar-section-label" id="recent-chats-label">Recent Chats</div>
+            <div class="recent-chats-list" id="recent-chats">
+                <div class="empty-recent">No conversations yet</div>
+            </div>
+            
+            <div class="sidebar-footer">
+                <button class="clear-chat-btn" id="clear-chat-btn" onclick="clearConversation()">
+                    <span>🗑️</span> Clear Conversation
+                </button>
+                <div class="footer-powered">Powered by Llama 3 · ChromaDB · RAG</div>
+            </div>
+        </aside>
+        
+        <!-- Main Application Panel -->
+        <main class="main-content">
+            
+            <!-- Top Header Bar -->
+            <header class="topbar">
+                <button id="sidebar-toggle" class="sidebar-toggle" onclick="toggleSidebar()" aria-label="Toggle navigation menu">←</button>
+                <div class="topbar-info">
+                    <h2 class="topbar-title" id="page-title">Medical AI Assistant</h2>
+                    <p class="topbar-sub" id="page-sub">Ask anything about health, symptoms, or medications</p>
+                </div>
+                <div class="topbar-status">
+                    <span class="status-dot"></span>
+                    <span class="status-text" id="online-status">Online · Fetching location...</span>
+                </div>
+                <div class="theme-toggle-container">
+                    <span class="theme-label-icon">☀️</span>
+                    <label class="switch">
+                        <input type="checkbox" id="theme-toggle" onchange="toggleTheme()">
+                        <span class="slider round"></span>
+                    </label>
+                    <span class="theme-label-icon">🌙</span>
+                </div>
+            </header>
+            
+            <!-- Viewport Container -->
+            <div class="view-container">
+                
+                <!-- 1. CHAT VIEW -->
+                <section id="chat-view" class="view-section active">
+                    <!-- Welcome / Empty State -->
+                    <div class="welcome-screen" id="welcome-screen">
+                        <div class="welcome-icon">🩺</div>
+                        <h1 class="welcome-title">How can I help you today?</h1>
+                        <p class="welcome-sub">Ask about symptoms, conditions, medications, or navigate to other tabs to upload image/find hospitals.</p>
+                        
+                        <!-- Suggestion Chips -->
+                        <div class="suggestion-container">
+                            <button class="suggest-chip" onclick="sendSuggestion('What causes high blood pressure?')">What causes high blood pressure?</button>
+                            <button class="suggest-chip" onclick="sendSuggestion('Symptoms of diabetes')">Symptoms of diabetes</button>
+                            <button class="suggest-chip" onclick="sendSuggestion('Is my rash serious?')">Is my rash serious?</button>
+                            <button class="suggest-chip" onclick="sendSuggestion('Common cold vs flu')">Common cold vs flu</button>
+                            <button class="suggest-chip" onclick="sendSuggestion('When to see a doctor?')">When to see a doctor?</button>
+                        </div>
+                    </div>
+                    
+                    <!-- Chat History (Messages Container) -->
+                    <div class="chat-history" id="chat-history"></div>
+                    
+                    <!-- Chat Input Wrapper -->
+                    <div class="chat-input-wrapper">
+                        <div class="chat-input-bar">
+                            <input type="text" id="chat-input" placeholder="Ask Healix anything about your health…" onkeydown="handleChatKey(event)">
+                            <button id="chat-send-btn" onclick="sendChatMessage()">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M22 2L11 13M22 2L15 22L11 13M11 13L2 9L22 2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                </section>
+                
+                <!-- 2. IMAGE ANALYSIS VIEW -->
+                <section id="image-view" class="view-section">
+                    <div class="section-intro">
+                        <h3 class="section-title">🔬 Medical Image Analysis</h3>
+                        <p class="section-sub">Upload a photo and get instant AI-powered analysis from Llama Scout.</p>
+                    </div>
+                    
+                    <div class="image-analysis-grid">
+                        <div class="upload-card">
+                            <div class="drag-zone" id="drag-zone" onclick="triggerFileInput()">
+                                <input type="file" id="image-uploader" accept="image/*" style="display:none" onchange="handleFileSelect(event)">
+                                <div class="drag-zone-content">
+                                    <span class="upload-icon">📸</span>
+                                    <span class="upload-title">Choose image or drag here</span>
+                                    <span class="upload-sub">Supports JPG, JPEG, PNG, WEBP</span>
+                                </div>
+                            </div>
+                            <div class="preview-zone" id="preview-zone" style="display:none">
+                                <img id="image-preview" src="" alt="Selected Preview">
+                                <div class="preview-actions">
+                                    <button class="btn btn-secondary" onclick="resetImageUpload()">Remove</button>
+                                    <button class="btn btn-primary" id="analyze-image-btn" onclick="analyzeSelectedImage()">Analyze Image →</button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="analysis-results-card">
+                            <div class="card-header">
+                                <span class="ai-badge">AI REPORT</span>
+                                <h4 class="card-title">Analysis Report</h4>
+                            </div>
+                            <div class="card-body" id="analysis-report-body">
+                                <div class="empty-state-text">Upload and analyze an image to view reports.</div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+                
+                <!-- 3. HOSPITALS VIEW -->
+                <section id="hospitals-view" class="view-section">
+                    <div class="section-intro">
+                        <h3 class="section-title">🏥 Find Hospitals & Clinics</h3>
+                        <p class="section-sub">Locate medical centers based on your current coordinates or a custom search.</p>
+                    </div>
+                    
+                    <!-- Search Controls -->
+                    <div class="hospital-controls">
+                        <div class="control-row">
+                            <div class="search-mode-toggles">
+                                <button class="btn-toggle active" id="mode-gps" onclick="setSearchMode('gps')">📍 GPS Location</button>
+                                <button class="btn-toggle" id="mode-manual" onclick="setSearchMode('manual')">✏️ Manual Search</button>
+                            </div>
+                            
+                            <div class="search-input-group" id="manual-search-group" style="display:none">
+                                <input type="text" id="city-search-input" placeholder="Enter city/area, e.g. Bandra, Mumbai">
+                            </div>
+                        </div>
+                        
+                        <div class="control-row secondary">
+                            <div class="specialty-indicator">
+                                <span>Detected Specialty query:</span>
+                                <strong id="detected-specialty-text">Multispeciality Hospital</strong>
+                            </div>
+                            <button class="btn btn-primary" onclick="triggerHospitalSearch()">Search Nearby Hospitals</button>
+                        </div>
+                    </div>
+                    
+                    <div class="hospital-display-grid">
+                        <div class="map-card">
+                            <div id="hospital-map"></div>
+                        </div>
+                        <div class="hospitals-list-wrapper">
+                            <h4 class="hospitals-count" id="hospitals-count-text">Search for hospitals to view results</h4>
+                            <div class="hospitals-cards-container" id="hospital-cards-container">
+                                <!-- Cards dynamic content -->
+                                <div class="empty-state-text">No hospitals loaded. Click search above.</div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+                
+                <!-- 4. APPOINTMENTS VIEW -->
+                <section id="appointments-view" class="view-section">
+                    <div class="section-intro">
+                        <h3 class="section-title">📅 My Appointments</h3>
+                        <p class="section-sub">View and keep track of your confirmed bookings.</p>
+                    </div>
+                    
+                    <div class="appointments-cards-container" id="appointments-cards-container">
+                        <div class="empty-state-text">No appointments found. Use the "Find Hospitals" page to book one!</div>
+                    </div>
+                </section>
+                
+            </div>
+        </main>
+        
+        <!-- BOOKING OVERLAY MODAL -->
+        <div class="booking-modal-overlay" id="booking-modal-overlay">
+            <div class="booking-modal">
+                <button class="modal-close-btn" onclick="closeBookingModal()">✕</button>
+                <div class="modal-header">
+                    <h3 class="modal-title">Book an Appointment</h3>
+                    <div class="modal-hosp-pill">🏥 <span id="modal-hospital-name">Saint Luke's Hospital</span></div>
+                </div>
+                <div class="modal-body">
+                    <form id="booking-form" onsubmit="confirmBooking(event)">
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label for="booking-name">Full Name</label>
+                                <input type="text" id="booking-name" required placeholder="Patient full name">
+                            </div>
+                            <div class="form-group">
+                                <label for="booking-age">Age</label>
+                                <input type="number" id="booking-age" required min="1" max="120" value="30">
+                            </div>
+                            <div class="form-group">
+                                <label for="booking-phone">Phone Number</label>
+                                <input type="tel" id="booking-phone" required placeholder="+91 00000 00000">
+                            </div>
+                            <div class="form-group">
+                                <label for="booking-date">Preferred Date</label>
+                                <input type="date" id="booking-date" required>
+                            </div>
+                        </div>
+                        <div class="form-actions">
+                            <button type="button" class="btn btn-secondary" onclick="closeBookingModal()">Cancel</button>
+                            <button type="submit" class="btn btn-primary">Confirm Booking →</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+        
+    </div>
+    
+    <!-- Leaflet.js Map script -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <!-- App Client Script -->
+    <script src="app.js"></script>
+</body>
+</html>

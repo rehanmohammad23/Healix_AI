@@ -1,10 +1,9 @@
-streamlit
+fastapi
+uvicorn[standard]
+python-multipart
 python-dotenv
 groq
 requests
-folium
-streamlit-folium
-streamlit-js-eval
 
 langchain
 langchain-community
